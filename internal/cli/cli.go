@@ -5,21 +5,30 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ak-repo/tc/internal/clipboard"
-	transcript "github.com/ak-repo/tc/internal/format"
-	"github.com/ak-repo/tc/internal/runner"
+	"github.com/ak-repo/tcopy/internal/clipboard"
+	transcript "github.com/ak-repo/tcopy/internal/format"
+	"github.com/ak-repo/tcopy/internal/runner"
 )
 
 const Usage = "Usage: tcopy [--] <command> [arguments...]\nRuns a non-interactive command and copies command plus output.\nOptions: --help, --version\nUse an explicit shell for pipes, redirects, aliases and built-ins.\n"
 
+// Version is set by release builds using -ldflags.
+var Version = "dev"
+
 func Run(args []string, in io.Reader, out, errout io.Writer) int {
+	return run(args, in, out, errout, runner.Run, clipboard.Copy)
+}
+
+func run(args []string, in io.Reader, out, errout io.Writer,
+	execute func([]string, io.Reader, io.Writer, io.Writer) runner.Result,
+	copyText func(func() io.Reader) error) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "--help":
 			fmt.Fprint(out, Usage)
 			return 0
 		case "--version":
-			fmt.Fprintln(out, "tcopy v0.1.0")
+			fmt.Fprintln(out, "tcopy "+Version)
 			return 0
 		case "--":
 			args = args[1:]
@@ -34,7 +43,7 @@ func Run(args []string, in io.Reader, out, errout io.Writer) int {
 		fmt.Fprint(errout, Usage)
 		return 2
 	}
-	r := runner.Run(args, in, out, errout)
+	r := execute(args, in, out, errout)
 	failure := r.Err
 	if r.Err != nil {
 		fmt.Fprintln(errout, "tcopy:", r.Err)
@@ -45,8 +54,8 @@ func Run(args []string, in io.Reader, out, errout io.Writer) int {
 	if r.Interrupted {
 		failure = fmt.Errorf("interrupted; clipboard copy skipped")
 	}
-	if !r.Overflow && !r.Interrupted && (r.Err == nil || len(r.Output) > 0 || r.Code != 126 && r.Code != 127) {
-		if e := clipboard.Copy(func() io.Reader { return transcript.Transcript(args, r.Output) }); e != nil {
+	if !r.Overflow && !r.Interrupted && r.Started {
+		if e := copyText(func() io.Reader { return transcript.Transcript(args, r.Output) }); e != nil {
 			failure = e
 			fmt.Fprintln(errout, "tcopy:", e)
 		}

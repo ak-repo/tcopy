@@ -1,311 +1,70 @@
-# tc — Terminal Command & Output Copier
+# tcopy — Terminal Command & Output Copier
 
-**Project status:** Proposed / MVP development  
-**Version target:** `v0.1.0`  
-**Primary language:** Go  
-**Platform (v0.1):** Linux (Wayland and X11)  
-**License (proposed):** MIT
+**Status:** Linux MVP implemented; release and desktop acceptance require verification.
+**Release target:** v0.1.0
+**Language:** Go (declared minimum: 1.27)
+**Platforms:** Linux amd64 and arm64
+**License:** MIT
 
-## 1. Overview
+## Purpose and current scope
 
-`tc` is a lightweight command-line utility that runs a command, displays its output in the terminal, and copies **the command plus its output** to the system clipboard. It is designed for developers sharing build logs, debugging information, command results, and reproducible examples.
+`tcopy` runs a command, displays stdout/stderr live, and copies a command-and-output transcript for sharing logs and reproducible examples. It uses a single compiled executable plus an external desktop clipboard tool. The executable and repository are named `tcopy`; the Go module is `github.com/ak-repo/tcopy`.
 
-### Example
+The project document's historical filename is retained. The original `tc` naming proposal has been superseded to avoid shadowing Linux traffic control. No shell replacement, automatic capture of prior commands, PTY support, or cross-platform clipboard support is included.
 
-```bash
-tc pwd
-```
+Installation, usage, dependencies, limits, exit statuses, and troubleshooting are maintained in [README.md](../README.md).
 
-Terminal:
+## Architecture and interfaces
 
 ```text
-/home/ak/downloads
+cmd/tcopy → CLI → runner → formatter → clipboard adapter
+                    │                     │
+              terminal streams      wl-copy / xclip
 ```
 
-Clipboard:
+- **Entrypoint:** passes process arguments and standard streams to `cli.Run`, then exits with its status.
+- **CLI:** accepts `--help`, `--version`, and an optional `--` separator. The first command and all remaining arguments execute directly. Internal execution/copy functions can be substituted in tests; the public CLI syntax is unchanged.
+- **Runner:** uses `os/exec`, inherited environment/directory/stdin, and a separate child process group. Stdout and stderr retain their destinations while a synchronized capture combines up to 10 MiB. Results distinguish successful process start, exit code, execution error, overflow, and interruption.
+- **Formatter:** returns a reader containing `$ <quoted arguments>\n` followed by original captured bytes. Empty output preserves the header; empty or unsafe arguments are single-quoted, with embedded quotes escaped. Cross-stream ordering is approximate.
+- **Clipboard:** accepts a fresh-reader factory so fallback receives the complete transcript. It tries `wl-copy` with `WAYLAND_DISPLAY`, then `xclip -selection clipboard` with `DISPLAY`, checking executable availability. Each attempt has a five-second context deadline and bounded pipe cleanup. Failed attempts are combined into a diagnostic.
 
-```text
-$ pwd
-/home/ak/downloads
-```
+Execution failures do not prevent copying a started child's transcript, including when it returns 126 or 127. Start failures skip copying. Overflow and received SIGINT/SIGTERM skip copying. Child failure status takes precedence; otherwise capture/clipboard failures return 1, usage errors return 2. Missing executables return 127; other start errors return 126.
 
-For multi-line output, the clipboard retains the line breaks. Errors should be captured too.
+SIGINT/SIGTERM forward to the child group, followed by forced cleanup after two seconds when necessary. A child terminated by a signal returns `128 + signal`. This is process wrapping without a PTY; interactive applications are unsupported.
 
-## 2. Problem & Goals
+## Development and distribution
 
-Current terminal clipboard workflows often require piping output through tools such as `wl-copy` or `xclip`, which typically loses the original command and may hide output unless combined with `tee`.
+Use the existing checkout rather than initializing a new module. Build with `go build -o tcopy ./cmd/tcopy`; development builds report `dev`. GoReleaser injects the release tag through the CLI's version variable.
 
-**Goals**
+Pull-request and main/master branch CI checks formatting, race tests, vet, both Linux builds, installer fixtures, and release configuration. The tag workflow repeats formatting, race tests, vet, installer fixtures, and configuration validation before publishing archives. No release availability is implied by these configuration files.
 
-- One-command execution and clipboard capture (`tc git status`).
-- Show output in the terminal while capturing it.
-- Include an accurately formatted representation of the invoked command.
-- Capture both standard output and standard error.
-- Return the executed command's exit status where practical.
-- Support Linux Wayland and X11 without heavy runtime dependencies.
-- Distribute a single compiled executable and publish open-source releases.
+Release assets are `tcopy_<version>_linux_<arch>.tar.gz` and `checksums.txt`. Archives include README and LICENSE. The installer selects amd64/arm64, verifies the downloaded checksum, and installs into the configured directory. Native packages are deferred pending maintainer metadata and package testing.
 
-**Non-goals for v0.1**
+Transcripts can contain credentials or other sensitive data. tcopy neither uploads nor persists them itself. Commands and clipboard managers can independently use networking or retain history.
 
-- Replacing an interactive shell.
-- Automatically capturing commands previously executed outside `tc`.
-- Native support for interactive/full-screen applications (`vim`, `top`, etc.).
-- Processing arbitrarily large or never-ending output without limits.
-- Parsing shell metacharacters such as pipes or redirects without an explicit shell.
+## Acceptance status and verification
 
-## 3. CLI Design
-
-| Command | Expected behavior |
+| Capability | Implementation / verification |
 | --- | --- |
-| `tc pwd` | Run `pwd`; show and copy command and path. |
-| `tc git status` | Run `git status`; show and copy output. |
-| `tc make run` | Show and copy build logs, including errors. |
-| `tc --help` | Print supported usage and options. |
-| `tc --version` | Print the installed version. |
+| Direct command execution, inherited stdin | Implemented; automated tests |
+| Live stdout/stderr and bounded combined capture | Implemented; runner tests, including limit boundaries |
+| Quoted arguments, empty/multiline output, final newlines | Implemented; formatter tests |
+| Usage, version, separator, exit precedence | Implemented; CLI tests |
+| Missing/unexecutable command and child 126/127 | Implemented; runner and CLI tests |
+| Backend availability, preference, fallback, transcript replay | Implemented; local executable fixtures |
+| Clipboard timeout | Implemented; short-deadline fixture test |
+| SIGINT/SIGTERM and forced termination | Implemented; isolated subprocess tests |
+| Installer valid/corrupt archives | Local release fixtures; no network required |
+| Linux release builds and configuration | Automated CI checks; publishing requires a version tag |
+| Real desktop clipboard persistence | Pending manual Wayland and X11 checks |
+| Published versioned binaries / Go installation | Verify against an actual published release before marking complete |
 
-**Proposed follow-on options (not v0.1 commitments)**
+Before release, run the README development checks and build both targets. On both Wayland and X11, run `tcopy pwd`, a command emitting stdout/stderr, an empty-output command, and a failing command; paste into another application after tcopy exits. Verify transcript content, continued clipboard ownership, terminal output, and exit status. Confirm headless diagnostics and interrupt cleanup. Inspect release assets and test installation from the published archives before declaring v0.1.0 complete.
 
-- `tc --only <command...>` — copy only output.
-- `tc --md <command...>` — copy a Markdown fenced code block.
-- `tc --save <file> -- <command...>` — save captured text to a file.
-- `tc --last` — capture the previous shell command/output; **requires shell integration** and cannot be implemented reliably by a normal standalone executable alone.
+## Roadmap
 
-### Format
+- **v0.1.0:** finish desktop acceptance, publish tested amd64/arm64 archives, and verify installation.
+- **Quality of life:** consider `--only`, `--md`, saving output, configurable clipboard selection, and disk-backed capture. The current MVP already has output limits and signal handling.
+- **Later:** macOS/Windows clipboard adapters, completion, native packages, and explicit shell integration for previous-command capture. `--last` requires shell hooks and a separate privacy design.
 
-Default clipboard format:
-
-````text
-$ <command and quoted arguments>
-<combined output>
-````
-
-For empty output, copy the command header. Preserve final newlines and represent arguments safely, including spaces and quotes. A future formatting option may offer `command = output` for single-line results.
-
-## 4. Command Name Conflict
-
-**Important:** Linux commonly already includes an executable named `tc` from the `iproute2` suite, used for traffic control. Installing this utility as `tc` may shadow the existing system command depending on `PATH` order.
-
-**Publishing recommendation:** Use a unique default executable name such as `tcopy`, and document an **opt-in** personal alias `alias tc='tcopy'` for users who prefer the short name. Users who need system traffic control must retain access to the original system `tc` command. If the repository is named `tc`, its binary can still be named `tcopy`.
-
-## 5. Technology & Architecture
-
-**Go** is recommended for v0.1: simple process management, fast compilation, cross-compilation, and a straightforward single-binary release. Rust is a viable alternative but not necessary for this scope.
-
-### Components
-
-1. **CLI parser** — validates flags and identifies the command plus arguments.
-2. **Command runner** — invokes a process with `os/exec`, streams output to the terminal, captures it, and records exit status.
-3. **Formatter** — builds clipboard text with command and output.
-4. **Clipboard adapter** — invokes `wl-copy` on Wayland or `xclip -selection clipboard` on X11; reports missing backends clearly.
-5. **Exit handling** — preserves child exit code when possible and handles interrupts and clipboard failures consistently.
-
-### Suggested repository layout
-
-```text
-tc/
-├── cmd/
-│   └── tcopy/
-│       └── main.go
-├── internal/
-│   ├── runner/
-│   │   ├── runner.go
-│   │   └── runner_test.go
-│   ├── clipboard/
-│   │   └── clipboard.go
-│   └── format/
-│       ├── format.go
-│       └── format_test.go
-├── .github/
-│   └── workflows/
-│       ├── ci.yml
-│       └── release.yml
-├── go.mod
-├── README.md
-├── LICENSE
-└── .gitignore
-```
-
-For an initial prototype, a single `main.go` is sufficient; modularize when tests and features justify it.
-
-### Execution flow
-
-```text
-User: tcopy git status
-        |
-        v
-Parse command and arguments
-        |
-        v
-Spawn process and stream stdout/stderr
-        |
-        v
-Capture bounded output and exit code
-        |
-        v
-Format "$ git status\n<output>"
-        |
-        v
-Copy via wl-copy / xclip
-        |
-        v
-Exit with appropriate status
-```
-
-## 6. Implementation Notes
-
-- **Do not** execute user arguments through `sh -c` by default. Use `exec.Command(program, args...)` to avoid accidental shell interpretation.
-- A literal pipeline can be requested explicitly, e.g. `tcopy sh -c 'ls | grep go'`.
-- Handle `--` to distinguish utility options from commands/options.
-- Consider capturing stdout and stderr separately with clear semantics; perfect relative ordering across two OS streams is not guaranteed.
-- When capturing both output streams, show output promptly rather than only after completion.
-- For missing commands and other process-start errors, provide a useful error message and defined exit status.
-- Handle `SIGINT`/`SIGTERM` and clean up child processes. A normal process wrapper does not automatically offer a full terminal/PTY experience.
-- Set an output size limit or spool to a temporary file for long logs; avoid unbounded RAM growth.
-- Treat clipboard failures separately from command failures and document exit-code precedence.
-- Clipboard content may contain credentials, secrets, access tokens, or sensitive environment values. Do not upload content anywhere; make it clear when copying occurs.
-- Linux clipboard commands require a usable graphical clipboard session; headless shells and remote SSH sessions may not have one.
-
-## 7. Dependencies
-
-**Build:** Go toolchain.  
-**Runtime:** Linux plus one clipboard backend:
-
-- Wayland: `wl-copy` from `wl-clipboard`
-- X11: `xclip`
-
-Ubuntu/Debian:
-
-```bash
-sudo apt update
-sudo apt install wl-clipboard xclip
-```
-
-Clipboard selection should check both session variables and actual program availability, with a fallback where appropriate.
-
-## 8. Development Setup
-
-```bash
-mkdir tc && cd tc
-go mod init github.com/YOUR_USERNAME/tc
-mkdir -p cmd/tcopy internal/{runner,clipboard,format}
-```
-
-After implementing `cmd/tcopy/main.go`:
-
-```bash
-go fmt ./...
-go test ./...
-go build -o tcopy ./cmd/tcopy
-./tcopy pwd
-./tcopy git status
-```
-
-Replace `YOUR_USERNAME` with the actual GitHub owner before publishing.
-
-## 9. Testing & Acceptance Criteria
-
-| Test case | Acceptance criterion |
-| --- | --- |
-| Simple command (`pwd`) | Terminal output remains visible; clipboard contains command and output. |
-| Multi-word arguments (`echo hello world`) | Arguments are represented unambiguously. |
-| Multi-line output | Line breaks are preserved. |
-| Stdout + stderr | Both are captured and displayed. |
-| Nonzero exit | Output is copied; command exit status is preserved or documented. |
-| Missing executable | Clear error message, no silent success. |
-| Empty output | Clipboard still contains command header. |
-| No clipboard backend | Clear diagnostic; documented exit behavior. |
-| Command with secrets | No networking or logs beyond explicitly requested terminal/clipboard behavior. |
-| Large output | Bounded memory or documented limit. |
-| Interrupt (`Ctrl+C`) | Child process does not remain running unintentionally. |
-
-Use dependency injection around process and clipboard execution so automated tests do not require a live desktop clipboard.
-
-## 10. Publishing Plan
-
-### Stage A — Source repository
-
-1. Add a clear `README.md` with examples, Linux dependencies, naming conflict note, limitations, and security caveats.
-2. Add an MIT license (if chosen), `.gitignore`, tests, and contribution guidelines.
-3. Enable CI for `go test ./...`, `go vet ./...`, and formatting checks.
-4. Push the repository to GitHub.
-
-Example with the GitHub CLI (after authenticating):
-
-```bash
-git init -b main
-git add .
-git commit -m "feat: initial terminal output copier"
-gh repo create tc --public --source=. --remote=origin --push
-```
-
-### Stage B — Versioned release
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Publish release assets for at least `linux/amd64` and `linux/arm64`, including checksums. GitHub Actions or GoReleaser may automate compilation and release attachments.
-
-Manual example:
-
-```bash
-mkdir -p dist
-GOOS=linux GOARCH=amd64 go build -o dist/tcopy-linux-amd64 ./cmd/tcopy
-GOOS=linux GOARCH=arm64 go build -o dist/tcopy-linux-arm64 ./cmd/tcopy
-sha256sum dist/* > dist/checksums.txt
-gh release create v0.1.0 dist/* --title "v0.1.0" --generate-notes
-```
-
-### Stage C — Installation instructions
-
-**For Go users:**
-
-```bash
-go install github.com/YOUR_USERNAME/tc/cmd/tcopy@latest
-```
-
-The installed binary is named `tcopy`. Users must have `$(go env GOPATH)/bin` or `GOBIN` on their `PATH`.
-
-**For non-Go users:** Download the matching GitHub Release binary, verify its checksum, rename it to `tcopy`, and place it in a directory on `PATH` (e.g., `~/.local/bin`). Avoid recommending an unaudited `curl | sh` installer as the default route.
-
-**Optional short alias:**
-
-```bash
-alias tc='tcopy'
-```
-
-Document how to make the alias persistent in Bash, Zsh, or Fish, and how to invoke the original system `tc` when necessary.
-
-## 11. Roadmap
-
-### v0.1.0 — Linux MVP
-
-- [ ] Execute basic non-interactive commands.
-- [ ] Display and capture stdout/stderr.
-- [ ] Copy command and output on Wayland/X11.
-- [ ] Handle missing commands, nonzero exits, and clipboard failures.
-- [ ] Add tests, help/version flags, and usage documentation.
-- [ ] Publish Linux amd64/arm64 binaries.
-
-### v0.2.0 — Quality of life
-
-- [ ] `--only` and `--md` formatting modes.
-- [ ] Output-size limits or disk-backed capture.
-- [ ] Improved signals and cancellation behavior.
-- [ ] Configurable clipboard backend and better headless diagnostics.
-
-### v0.3.0+ — Wider adoption
-
-- [ ] macOS clipboard backend (`pbcopy`).
-- [ ] Windows clipboard support.
-- [ ] Shell completion and packaging (Homebrew, distro packages, etc.).
-- [ ] Experimental `--last` via explicit shell hooks, with privacy implications documented.
-
-## 12. Definition of Done for v0.1.0
-
-A release is ready when a Linux user can install `tcopy`, run `tcopy git status`, see the output live, paste a faithful command-and-output transcript, understand any clipboard failures, and download a tested versioned binary or install via the Go toolchain.
-
----
-
-**Project decision:** Go implementation, Linux-first, public repository named `tc`, recommended executable name `tcopy` to avoid collision with the system `tc` networking utility.
+These are future proposals, not supported flags or release commitments.

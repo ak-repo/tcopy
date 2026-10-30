@@ -7,6 +7,8 @@ builds:
   - id: tcopy
     main: ./cmd/tcopy
     binary: tcopy
+    ldflags:
+      - -s -w -X github.com/ak-repo/tcopy/internal/cli.Version={{.Tag}}
     env:
       - CGO_ENABLED=0
     goos:
@@ -17,24 +19,12 @@ builds:
 
 archives:
   - id: linux
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
     files:
       - LICENSE
       - README.md
-
-nfpms:
-  - id: linux-packages
-    package_name: tcopy
-    maintainer: "Your Name <your-email@example.com>"
-    vendor: tcopy
-    description: "Copy terminal commands and their output to the clipboard"
-    license: MIT
-    bindir: /usr/bin
-    formats:
-      - deb
-      - rpm
-      - archlinux
 
 checksum:
   name_template: checksums.txt

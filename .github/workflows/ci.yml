@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go test -race ./...
+      - run: go vet ./...
+      - name: Build Linux targets
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tcopy-amd64 ./cmd/tcopy
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/tcopy-arm64 ./cmd/tcopy
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+      - name: Test installer
+        run: bash tests/install_test.sh

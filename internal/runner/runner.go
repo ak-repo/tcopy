@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ type Result struct {
 	Code                  int
 	Err                   error
 	Overflow, Interrupted bool
+	Started               bool
 }
 type capture struct {
 	sync.Mutex
@@ -39,8 +41,11 @@ func (s stream) Write(p []byte) (int, error) {
 	} else {
 		s.cap.data = append(s.cap.data, p...)
 	}
-	_, err := s.dst.Write(p)
-	return n, err
+	written, err := s.dst.Write(p)
+	if err == nil && written != n {
+		err = io.ErrShortWrite
+	}
+	return written, err
 }
 func Run(args []string, in io.Reader, out, stderr io.Writer) Result {
 	c := exec.Command(args[0], args[1:]...)
@@ -55,7 +60,7 @@ func Run(args []string, in io.Reader, out, stderr io.Writer) Result {
 	defer signal.Stop(signals)
 	if err := c.Start(); err != nil {
 		code := 126
-		if _, ok := err.(*exec.Error); ok {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			code = 127
 		}
 		return Result{Code: code, Err: err}
@@ -96,5 +101,5 @@ func Run(args []string, in io.Reader, out, stderr io.Writer) Result {
 	if interrupted {
 		_ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
 	}
-	return Result{b.data, code, err, b.overflow, interrupted}
+	return Result{Output: b.data, Code: code, Err: err, Overflow: b.overflow, Interrupted: interrupted, Started: true}
 }

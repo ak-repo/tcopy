@@ -11,6 +11,10 @@ import (
 )
 
 func Copy(source func() io.Reader) error {
+	return copyWithTimeout(source, 5*time.Second)
+}
+
+func copyWithTimeout(source func() io.Reader, timeout time.Duration) error {
 	var failures []string
 	for _, b := range []struct {
 		env, name string
@@ -25,9 +29,10 @@ func Copy(source func() io.Reader) error {
 			failures = append(failures, b.name+": not installed")
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		c := exec.CommandContext(ctx, b.name, b.args...)
 		c.Stdin = source()
+		c.WaitDelay = timeout
 		err := c.Run()
 		cancel()
 		if err == nil {
